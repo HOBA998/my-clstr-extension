@@ -1,0 +1,102 @@
+package com.example // Sửa thành package tương ứng với repo của bạn
+
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Document
+
+class Yanhh3dProvider : MainAPI() {
+    override var mainUrl = "https://yanhh3d.pw"
+    override var name = "Yanhh3D"
+    override val hasMainPage = true
+    override var lang = "vi"
+    override val supportedTypes = setOf(TvType.Anime, TvType.TvSeries)
+
+    // 1. LẤY PHIM TRANG CHỦ
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val url = if (page <= 1) mainUrl else "$mainUrl/page/$page/"
+        val doc = app.get(url).document
+        val homeList = mutableListOf<SearchResponse>()
+
+        // Selector quét danh sách phim ở trang chủ
+        doc.select("article.item-poster, div.bsx, div.halo-item").forEach { element ->
+            val title = element.select("h2, .title, .entry-title").text().trim()
+            val href = element.select("a").attr("href")
+            val poster = element.select("img").attr("src")
+
+            if (title.isNotEmpty() && href.isNotEmpty()) {
+                homeList.add(
+                    newAnimeSearchResponse(title, href, TvType.Anime) {
+                        this.posterUrl = poster
+                    }
+                )
+            }
+        }
+        return newHomePageResponse("Mới Cập Nhật", homeList)
+    }
+
+    // 2. TÌM KIẾM PHIM
+    override suspend fun search(query: String): List<SearchResponse> {
+        val searchUrl = "$mainUrl/?s=$query"
+        val doc = app.get(searchUrl).document
+
+        return doc.select("article.item-poster, div.bsx, div.halo-item").mapNotNull { element ->
+            val title = element.select("h2, .title, .entry-title").text().trim()
+            val href = element.select("a").attr("href")
+            val poster = element.select("img").attr("src")
+
+            if (title.isEmpty() || href.isEmpty()) null
+            else {
+                newAnimeSearchResponse(title, href, TvType.Anime) {
+                    this.posterUrl = poster
+                }
+            }
+        }
+    }
+
+    // 3. CHI TIẾT PHIM VÀ DANH SÁCH TẬP
+    override suspend fun load(url: String): LoadResponse {
+        val doc = app.get(url).document
+        val title = doc.select("h1.entry-title, h1.title").text().trim()
+        val poster = doc.select("div.poster img, div.thumb img").attr("src")
+        val description = doc.select("div.entry-content, div.desc").text().trim()
+
+        // Bóc tách danh sách tập phim
+        val episodes = doc.select("ul.episodelist li a, div.eplister ul li a").mapIndexed { index, ep ->
+            val epHref = ep.attr("href")
+            val epName = ep.select(".epl-num, .title").text().ifEmpty { "Tập ${index + 1}" }
+            Episode(
+                data = epHref,
+                name = epName
+            )
+        }
+
+        return newAnimeLoadResponse(title, url, TvType.Anime, episodes) {
+            this.posterUrl = poster
+            this.plot = description
+        }
+    }
+
+    // 4. LẤY LINK PHÁT VIDEO
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val doc = app.get(data).document
+
+        // Tìm iframe chứa trình phát video
+        doc.select("iframe, div.player-embed iframe").forEach { iframe ->
+            var iframeUrl = iframe.attr("src")
+            if (iframeUrl.startsWith("//")) {
+                iframeUrl = "https:$iframeUrl"
+            }
+
+            // Tự động giải mã các Embed Host phổ biến (Fembed, Streamtape, Hydrax, Ok.ru...)
+            if (iframeUrl.isNotEmpty()) {
+                loadExtractor(iframeUrl, subtitleCallback, callback)
+            }
+        }
+        return true
+    }
+}
